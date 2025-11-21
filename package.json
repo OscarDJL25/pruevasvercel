@@ -8,8 +8,10 @@
   "license": "ISC",
   "scripts": {
     "dev": "node --loader=esm-loader.js src/index.ts",
-    "start": "node src/index.js",
-    "test-aws": "node test-aws-connection.js"
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test-aws": "node test-aws-connection.js",
+    "vercel-build": "npm run build"
   },
   "dependencies": {
     "@types/express": "^5.0.0",
@@ -18,6 +20,7 @@
     "pg": "^8.16.3"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
   }
 }

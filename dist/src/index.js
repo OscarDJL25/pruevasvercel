@@ -90,6 +90,7 @@ app.get('/tareas', async (req, res) => {
     }
 });
 app.post('/tareas', express.json(), async (req, res) => {
+     console.log('BODY RECIBIDO PARA CREAR TAREA:', req.body);
     const { nombre, descripcion, fecha_asignacion, hora_asignacion, fecha_entrega, hora_entrega, finalizada, prioridad } = req.body;
     try {
         const result = await pool.query(`INSERT INTO tareas
