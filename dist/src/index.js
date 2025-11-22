@@ -125,7 +125,7 @@ app.get('/', (req, res) => {
           <p><strong>Base de Datos:</strong> ${dbType.toUpperCase()}</p>
           <p><strong>Endpoints disponibles:</strong></p>
           <ul>
-            <li>GET /tareas - Obtener todas las tareas</li>
+            <li>GET /tareas - Obtener todas las tareas</li>y
             <li>POST /tareas - Crear nueva tarea</li>
             <li>PUT /tareas/:id - Actualizar tarea</li>
             <li>DELETE /tareas/:id - Eliminar tarea</li>
@@ -165,8 +165,8 @@ app.post('/register', async (req, res) => {
         // Crear el usuario
         const result = await pool.query('INSERT INTO usuarios (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at', [email.toLowerCase(), passwordHash]);
         const newUser = result.rows[0];
-        // Generar JWT
-        const token = jwt.sign({ userId: newUser.id, email: newUser.email }, JWT_SECRET, { expiresIn: '7d' });
+        // Generar token JWT (30 días para pruebas)
+        const token = jwt.sign({ userId: newUser.id, email: newUser.email }, JWT_SECRET, { expiresIn: '30d' });
         console.log('✅ Usuario registrado:', newUser);
         res.status(201).json({
             message: 'Usuario registrado exitosamente',
@@ -203,8 +203,8 @@ app.post('/login', async (req, res) => {
         if (!isValidPassword) {
             return res.status(401).json({ error: 'Credenciales inválidas' });
         }
-        // Generar JWT
-        const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+        // Generar token JWT (30 días para pruebas)
+        const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '30d' });
         console.log('✅ Login exitoso para usuario:', user.email);
         res.json({
             message: 'Login exitoso',
