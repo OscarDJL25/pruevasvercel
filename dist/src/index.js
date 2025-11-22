@@ -2,22 +2,105 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
 import pool from './database-config.js';
 // ========================================
-// CONFIGURACIÓN ORIGINAL COMENTADA PARA REFERENCIA
+// FUNCIONES DE TRANSFORMACIÓN NAMING
 // ========================================
-// import pkg from 'pg'
-// const { Pool } = pkg
-// const pool = new Pool({
-//   connectionString: process.env.DATABASE_URL,
-//   ssl: { rejectUnauthorized: false }
-// })
-// ========================================
+/**
+ * Convierte camelCase a snake_case
+ * Ej: fechaAsignacion -> fecha_asignacion
+ */
+const camelToSnake = (str) => {
+    return str.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+};
+/**
+ * Convierte snake_case a camelCase
+ * Ej: fecha_asignacion -> fechaAsignacion
+ */
+const snakeToCamel = (str) => {
+    return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+};
+/**
+ * Convierte un objeto de camelCase a snake_case
+ * Para enviar a la base de datos
+ */
+const objectToSnakeCase = (obj) => {
+    if (obj === null || obj === undefined || typeof obj !== 'object') {
+        return obj;
+    }
+    if (Array.isArray(obj)) {
+        return obj.map(objectToSnakeCase);
+    }
+    const converted = {};
+    for (const [key, value] of Object.entries(obj)) {
+        const snakeKey = camelToSnake(key);
+        converted[snakeKey] = typeof value === 'object' ? objectToSnakeCase(value) : value;
+    }
+    return converted;
+};
+/**
+ * Convierte un objeto de snake_case a camelCase
+ * Para responder al cliente JSON
+ */
+const objectToCamelCase = (obj) => {
+    if (obj === null || obj === undefined || typeof obj !== 'object') {
+        return obj;
+    }
+    if (Array.isArray(obj)) {
+        return obj.map(objectToCamelCase);
+    }
+    const converted = {};
+    for (const [key, value] of Object.entries(obj)) {
+        const camelKey = snakeToCamel(key);
+        converted[camelKey] = typeof value === 'object' ? objectToCamelCase(value) : value;
+    }
+    return converted;
+};
 dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
+// =====================================
+// CONFIGURACIÓN CORS PARA ANDROID
+// =====================================
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    if (req.method === 'OPTIONS') {
+        res.sendStatus(200);
+    }
+    else {
+        next();
+    }
+});
 app.use(express.json());
+// =====================================
+// CONFIGURACIÓN JWT
+// =====================================
+const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
+const SALT_ROUNDS = 10;
+// =====================================
+// MIDDLEWARE DE AUTENTICACIÓN
+// =====================================
+const authenticateToken = async (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+    if (!token) {
+        return res.status(401).json({ error: 'Token de acceso requerido' });
+    }
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        req.userId = decoded.userId;
+        next();
+    }
+    catch (error) {
+        console.error('Error verificando token:', error);
+        return res.status(403).json({ error: 'Token inválido o expirado' });
+    }
+};
 app.get('/', (req, res) => {
     const dbType = process.env.DB_TYPE || 'vercel';
     res.type('html').send(`
@@ -57,6 +140,86 @@ app.get('/', (req, res) => {
 app.get('/about', function (req, res) {
     res.sendFile(path.join(__dirname, '..', 'components', 'about.htm'));
 });
+// =====================================
+// ENDPOINTS DE AUTENTICACIÓN
+// =====================================
+// POST /register - Registrar nuevo usuario
+app.post('/register', async (req, res) => {
+    console.log('🔵 POST /register - Body:', req.body);
+    const { email, password } = req.body;
+    // Validaciones básicas
+    if (!email || !password) {
+        return res.status(400).json({ error: 'Email y password son requeridos' });
+    }
+    if (password.length < 6) {
+        return res.status(400).json({ error: 'Password debe tener al menos 6 caracteres' });
+    }
+    try {
+        // Verificar si el usuario ya existe
+        const existingUser = await pool.query('SELECT id FROM usuarios WHERE email = $1', [email.toLowerCase()]);
+        if (existingUser.rows.length > 0) {
+            return res.status(400).json({ error: 'El email ya está registrado' });
+        }
+        // Hashear la contraseña
+        const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+        // Crear el usuario
+        const result = await pool.query('INSERT INTO usuarios (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at', [email.toLowerCase(), passwordHash]);
+        const newUser = result.rows[0];
+        // Generar JWT
+        const token = jwt.sign({ userId: newUser.id, email: newUser.email }, JWT_SECRET, { expiresIn: '7d' });
+        console.log('✅ Usuario registrado:', newUser);
+        res.status(201).json({
+            message: 'Usuario registrado exitosamente',
+            user: {
+                id: newUser.id,
+                email: newUser.email,
+                created_at: newUser.created_at
+            },
+            token
+        });
+    }
+    catch (error) {
+        console.error('❌ Error registrando usuario:', error);
+        res.status(500).json({ error: 'Error interno del servidor' });
+    }
+});
+// POST /login - Iniciar sesión
+app.post('/login', async (req, res) => {
+    console.log('🔵 POST /login - Body:', req.body);
+    const { email, password } = req.body;
+    // Validaciones básicas
+    if (!email || !password) {
+        return res.status(400).json({ error: 'Email y password son requeridos' });
+    }
+    try {
+        // Buscar el usuario
+        const result = await pool.query('SELECT id, email, password_hash FROM usuarios WHERE email = $1', [email.toLowerCase()]);
+        if (result.rows.length === 0) {
+            return res.status(401).json({ error: 'Credenciales inválidas' });
+        }
+        const user = result.rows[0];
+        // Verificar la contraseña
+        const isValidPassword = await bcrypt.compare(password, user.password_hash);
+        if (!isValidPassword) {
+            return res.status(401).json({ error: 'Credenciales inválidas' });
+        }
+        // Generar JWT
+        const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+        console.log('✅ Login exitoso para usuario:', user.email);
+        res.json({
+            message: 'Login exitoso',
+            user: {
+                id: user.id,
+                email: user.email
+            },
+            token
+        });
+    }
+    catch (error) {
+        console.error('❌ Error en login:', error);
+        res.status(500).json({ error: 'Error interno del servidor' });
+    }
+});
 // Nuevo endpoint de diagnóstico de base de datos
 app.get('/db-status', async (req, res) => {
     try {
@@ -79,55 +242,108 @@ app.get('/db-status', async (req, res) => {
         });
     }
 });
-app.get('/tareas', async (req, res) => {
+// =====================================
+// ENDPOINTS DE TAREAS (PROTEGIDOS CON JWT)
+// =====================================
+// GET /tareas - Obtener tareas del usuario autenticado
+app.get('/tareas', authenticateToken, async (req, res) => {
+    console.log('🔵 GET /tareas - Usuario ID:', req.userId);
     try {
-        const result = await pool.query('SELECT * FROM tareas ORDER BY id ASC');
-        res.json(result.rows);
+        const result = await pool.query('SELECT * FROM tareas WHERE usuario_id = $1 ORDER BY id ASC', [req.userId]);
+        console.log(`✅ Obtenidas ${result.rows.length} tareas para usuario ${req.userId}`);
+        // Convertir de snake_case (BD) a camelCase (JSON)
+        const tareasEnCamelCase = objectToCamelCase(result.rows);
+        res.json(tareasEnCamelCase);
     }
     catch (err) {
         console.error('Error al consultar la base de datos:', err);
         res.status(500).json({ error: 'Error al consultar la base de datos' });
     }
 });
-app.post('/tareas', express.json(), async (req, res) => {
-     console.log('BODY RECIBIDO PARA CREAR TAREA:', req.body);
-    const { nombre, descripcion, fecha_asignacion, hora_asignacion, fecha_entrega, hora_entrega, finalizada, prioridad } = req.body;
+// POST /tareas - Crear tarea para el usuario autenticado
+app.post('/tareas', authenticateToken, async (req, res) => {
+    console.log('🔵 POST /tareas - Usuario ID:', req.userId);
+    console.log('🔵 BODY RECIBIDO (camelCase):', req.body);
+    // El body puede venir en camelCase o snake_case, normalizamos a camelCase
+    const bodyEnCamelCase = objectToCamelCase(req.body);
+    const { nombre, descripcion, fechaAsignacion, horaAsignacion, fechaEntrega, horaEntrega, finalizada, prioridad } = bodyEnCamelCase;
+    console.log('🔵 Campos extraídos (camelCase):', { nombre, descripcion, fechaAsignacion, horaAsignacion });
+    // Validar campos requeridos
+    if (!nombre || !descripcion) {
+        console.log('❌ Campos requeridos faltantes');
+        return res.status(400).json({ error: 'Nombre y descripción son requeridos' });
+    }
     try {
+        console.log('🔵 Ejecutando INSERT con usuario_id:', req.userId);
+        // Insertamos usando nombres snake_case para la DB
         const result = await pool.query(`INSERT INTO tareas
         (nombre, descripcion, fecha_asignacion, hora_asignacion,
-          fecha_entrega, hora_entrega, finalizada, prioridad)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`, [nombre, descripcion, fecha_asignacion, hora_asignacion,
-            fecha_entrega, hora_entrega, finalizada, prioridad]);
-        res.status(201).json(result.rows[0]);
+          fecha_entrega, hora_entrega, finalizada, prioridad, usuario_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`, [nombre, descripcion, fechaAsignacion, horaAsignacion,
+            fechaEntrega, horaEntrega, finalizada, prioridad, req.userId]);
+        // Convertir respuesta a camelCase
+        const tareaCreada = objectToCamelCase(result.rows[0]);
+        console.log('✅ Tarea creada para usuario:', req.userId, tareaCreada);
+        res.status(201).json(tareaCreada);
     }
     catch (err) {
-        console.error('Error al insertar en la base de datos:', err);
+        console.error('❌ Error al insertar en la base de datos:', err);
         res.status(500).json({ error: 'Error al insertar en la base de datos' });
     }
 });
-app.delete('/tareas/:id', async (req, res) => {
+// DELETE /tareas/:id - Eliminar tarea del usuario autenticado
+app.delete('/tareas/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
+    console.log('🔴 DELETE /tareas/' + id + ' - Usuario ID:', req.userId);
     try {
-        await pool.query('DELETE FROM tareas WHERE id = $1', [id]);
-        res.status(204).send();
+        // Verificar que la tarea pertenece al usuario y obtener sus datos
+        const checkResult = await pool.query('SELECT * FROM tareas WHERE id = $1 AND usuario_id = $2', [id, req.userId]);
+        if (checkResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Tarea no encontrada o no autorizado' });
+        }
+        // Guardar datos antes de eliminar para retornar en camelCase
+        const tareaOriginal = checkResult.rows[0];
+        // Eliminar la tarea
+        await pool.query('DELETE FROM tareas WHERE id = $1 AND usuario_id = $2', [id, req.userId]);
+        // Convertir respuesta a camelCase
+        const tareaEliminada = objectToCamelCase(tareaOriginal);
+        console.log('🗑️ Tarea eliminada:', tareaEliminada);
+        res.json({ message: 'Tarea eliminada correctamente', tarea: tareaEliminada });
     }
     catch (err) {
         console.error('Error al eliminar de la base de datos:', err);
         res.status(500).json({ error: 'Error al eliminar de la base de datos' });
     }
 });
-app.put('/tareas/:id', express.json(), async (req, res) => {
+// PUT /tareas/:id - Actualizar tarea del usuario autenticado
+app.put('/tareas/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
-    const { nombre, descripcion, fecha_asignacion, hora_asignacion, fecha_entrega, hora_entrega, finalizada, prioridad } = req.body;
+    console.log('🔵 PUT /tareas/' + id + ' - Usuario ID:', req.userId);
+    console.log('🔵 BODY RECIBIDO (puede ser camelCase):', req.body);
+    // Normalizar input a camelCase
+    const bodyEnCamelCase = objectToCamelCase(req.body);
+    const { nombre, descripcion, fechaAsignacion, horaAsignacion, fechaEntrega, horaEntrega, finalizada, prioridad } = bodyEnCamelCase;
     try {
+        // Verificar que la tarea pertenece al usuario antes de actualizar
+        const checkResult = await pool.query('SELECT id FROM tareas WHERE id = $1 AND usuario_id = $2', [id, req.userId]);
+        if (checkResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Tarea no encontrada o no autorizado' });
+        }
+        // UPDATE usando snake_case para la DB
         const result = await pool.query(`UPDATE tareas SET
         nombre = $1, descripcion = $2,
         fecha_asignacion = $3, hora_asignacion = $4,
         fecha_entrega = $5, hora_entrega = $6,
         finalizada = $7, prioridad = $8
-      WHERE id = $9 RETURNING *`, [nombre, descripcion, fecha_asignacion, hora_asignacion,
-            fecha_entrega, hora_entrega, finalizada, prioridad, id]);
-        res.json(result.rows[0]);
+      WHERE id = $9 AND usuario_id = $10 RETURNING *`, [nombre, descripcion, fechaAsignacion, horaAsignacion,
+            fechaEntrega, horaEntrega, finalizada, prioridad, id, req.userId]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Tarea no encontrada' });
+        }
+        // Convertir respuesta a camelCase
+        const tareaActualizada = objectToCamelCase(result.rows[0]);
+        console.log('✅ Tarea actualizada:', tareaActualizada);
+        res.json(tareaActualizada);
     }
     catch (err) {
         console.error('Error al actualizar la base de datos:', err);
