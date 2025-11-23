@@ -338,6 +338,28 @@ app.get('/tareas', authenticateToken, async (req: AuthRequest, res) => {
   }
 })
 
+// DEBUG endpoint - para investigar conversiones
+app.post('/debug-conversion', authenticateToken, async (req: AuthRequest, res) => {
+  try {
+    console.log('🔍 DEBUG - Body original:', req.body);
+    
+    const bodyEnCamelCase = objectToCamelCase(req.body);
+    console.log('🔍 DEBUG - Body en camelCase:', bodyEnCamelCase);
+    
+    const bodyEnSnakeCase = objectToSnakeCase(bodyEnCamelCase);
+    console.log('🔍 DEBUG - Body en snake_case:', bodyEnSnakeCase);
+    
+    res.json({
+      original: req.body,
+      camelCase: bodyEnCamelCase,
+      snakeCase: bodyEnSnakeCase
+    });
+  } catch (err) {
+    console.error('🔍 DEBUG - Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+})
+
 // POST /tareas - Crear tarea para el usuario autenticado
 app.post('/tareas', authenticateToken, async (req: AuthRequest, res) => {
   console.log('🔵 POST /tareas - Usuario ID:', req.userId);
