@@ -321,19 +321,26 @@ app.post('/tareas', authenticateToken, async (req, res) => {
         // Convertir valores camelCase a snake_case para la DB
         const dbData = objectToSnakeCase(bodyEnCamelCase);
         console.log('🔵 DEBUG - Datos convertidos para DB:', dbData);
-        // Usar valores por defecto para campos opcionales
+        // Usar valores por defecto según esquema de DB
+        const fechaHoy = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+        const horaAhora = new Date().toTimeString().split(' ')[0]; // HH:mm:ss
+        // Mapear prioridad string a integer
+        const prioridadMap = { 'baja': 1, 'media': 2, 'alta': 3 };
+        const prioridadInt = typeof dbData.prioridad === 'string'
+            ? prioridadMap[dbData.prioridad.toLowerCase()] || 2
+            : dbData.prioridad || 2;
         const valores = [
-            dbData.nombre || null,
-            dbData.descripcion || null,
-            dbData.fecha_asignacion || null,
-            dbData.hora_asignacion || null,
-            dbData.fecha_entrega || null,
-            dbData.hora_entrega || null,
-            dbData.finalizada !== undefined ? dbData.finalizada : false,
-            dbData.prioridad || 'media',
-            req.userId
+            dbData.nombre || null, // $1 - requerido
+            dbData.descripcion || null, // $2 - requerido  
+            dbData.fecha_asignacion || fechaHoy, // $3 - NOT NULL, usar fecha actual
+            dbData.hora_asignacion || horaAhora, // $4 - NOT NULL, usar hora actual
+            dbData.fecha_entrega || null, // $5 - nullable
+            dbData.hora_entrega || null, // $6 - nullable
+            dbData.finalizada !== undefined ? dbData.finalizada : false, // $7 - boolean
+            prioridadInt, // $8 - integer (1=baja, 2=media, 3=alta)
+            req.userId // $9 - usuario_id
         ];
-        console.log('🔵 DEBUG - Valores para INSERT:', valores);
+        console.log('🔵 DEBUG - Valores corregidos para INSERT:', valores);
         // Insertamos usando nombres snake_case para la DB
         const result = await pool.query(`INSERT INTO tareas
         (nombre, descripcion, fecha_asignacion, hora_asignacion,
@@ -389,6 +396,11 @@ app.put('/tareas/:id', authenticateToken, async (req, res) => {
         }
         // Convertir valores camelCase a snake_case para la DB
         const dbData = objectToSnakeCase(bodyEnCamelCase);
+        // Mapear prioridad string a integer si es necesario
+        const prioridadMap = { 'baja': 1, 'media': 2, 'alta': 3 };
+        const prioridadInt = typeof dbData.prioridad === 'string'
+            ? prioridadMap[dbData.prioridad.toLowerCase()] || 2
+            : dbData.prioridad || 2;
         // UPDATE usando snake_case para la DB
         const result = await pool.query(`UPDATE tareas SET
         nombre = $1, descripcion = $2,
@@ -396,7 +408,7 @@ app.put('/tareas/:id', authenticateToken, async (req, res) => {
         fecha_entrega = $5, hora_entrega = $6,
         finalizada = $7, prioridad = $8
       WHERE id = $9 AND usuario_id = $10 RETURNING *`, [dbData.nombre, dbData.descripcion, dbData.fecha_asignacion, dbData.hora_asignacion,
-            dbData.fecha_entrega, dbData.hora_entrega, dbData.finalizada, dbData.prioridad, id, req.userId]);
+            dbData.fecha_entrega, dbData.hora_entrega, dbData.finalizada, prioridadInt, id, req.userId]);
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Tarea no encontrada' });
         }
