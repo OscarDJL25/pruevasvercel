@@ -338,6 +338,33 @@ app.get('/tareas', authenticateToken, async (req: AuthRequest, res) => {
   }
 })
 
+// DEBUG endpoint - para verificar esquema de tabla
+app.get('/debug-schema', authenticateToken, async (req: AuthRequest, res) => {
+  try {
+    console.log('🔍 DEBUG - Verificando esquema de tabla tareas');
+    
+    // Verificar estructura de la tabla
+    const schemaResult = await pool.query(`
+      SELECT column_name, data_type, is_nullable 
+      FROM information_schema.columns 
+      WHERE table_name = 'tareas' 
+      ORDER BY ordinal_position;
+    `);
+    
+    // Verificar si hay datos en la tabla
+    const countResult = await pool.query('SELECT COUNT(*) as total FROM tareas');
+    
+    res.json({
+      schema: schemaResult.rows,
+      totalRecords: countResult.rows[0].total,
+      userId: req.userId
+    });
+  } catch (err) {
+    console.error('🔍 DEBUG - Error al verificar esquema:', err);
+    res.status(500).json({ error: err.message });
+  }
+})
+
 // DEBUG endpoint - para investigar conversiones
 app.post('/debug-conversion', authenticateToken, async (req: AuthRequest, res) => {
   try {
