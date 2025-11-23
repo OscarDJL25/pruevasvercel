@@ -386,6 +386,11 @@ app.post('/tareas', authenticateToken, async (req: AuthRequest, res) => {
     
     // Convertir valores camelCase a snake_case para la DB
     const dbData = objectToSnakeCase(bodyEnCamelCase)
+    console.log('🔵 DEBUG - Datos convertidos para DB:', dbData);
+    console.log('🔵 DEBUG - Valores para INSERT:', [
+      dbData.nombre, dbData.descripcion, dbData.fecha_asignacion, dbData.hora_asignacion,
+      dbData.fecha_entrega, dbData.hora_entrega, dbData.finalizada, dbData.prioridad, req.userId
+    ]);
     
     // Insertamos usando nombres snake_case para la DB
     const result = await pool.query(
