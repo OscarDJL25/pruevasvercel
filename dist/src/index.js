@@ -275,12 +275,14 @@ app.post('/tareas', authenticateToken, async (req, res) => {
     }
     try {
         console.log('🔵 Ejecutando INSERT con usuario_id:', req.userId);
+        // Convertir valores camelCase a snake_case para la DB
+        const dbData = objectToSnakeCase(bodyEnCamelCase);
         // Insertamos usando nombres snake_case para la DB
         const result = await pool.query(`INSERT INTO tareas
         (nombre, descripcion, fecha_asignacion, hora_asignacion,
           fecha_entrega, hora_entrega, finalizada, prioridad, usuario_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`, [nombre, descripcion, fechaAsignacion, horaAsignacion,
-            fechaEntrega, horaEntrega, finalizada, prioridad, req.userId]);
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`, [dbData.nombre, dbData.descripcion, dbData.fecha_asignacion, dbData.hora_asignacion,
+            dbData.fecha_entrega, dbData.hora_entrega, dbData.finalizada, dbData.prioridad, req.userId]);
         // Convertir respuesta a camelCase
         const tareaCreada = objectToCamelCase(result.rows[0]);
         console.log('✅ Tarea creada para usuario:', req.userId, tareaCreada);
@@ -329,14 +331,16 @@ app.put('/tareas/:id', authenticateToken, async (req, res) => {
         if (checkResult.rows.length === 0) {
             return res.status(404).json({ error: 'Tarea no encontrada o no autorizado' });
         }
+        // Convertir valores camelCase a snake_case para la DB
+        const dbData = objectToSnakeCase(bodyEnCamelCase);
         // UPDATE usando snake_case para la DB
         const result = await pool.query(`UPDATE tareas SET
         nombre = $1, descripcion = $2,
         fecha_asignacion = $3, hora_asignacion = $4,
         fecha_entrega = $5, hora_entrega = $6,
         finalizada = $7, prioridad = $8
-      WHERE id = $9 AND usuario_id = $10 RETURNING *`, [nombre, descripcion, fechaAsignacion, horaAsignacion,
-            fechaEntrega, horaEntrega, finalizada, prioridad, id, req.userId]);
+      WHERE id = $9 AND usuario_id = $10 RETURNING *`, [dbData.nombre, dbData.descripcion, dbData.fecha_asignacion, dbData.hora_asignacion,
+            dbData.fecha_entrega, dbData.hora_entrega, dbData.finalizada, dbData.prioridad, id, req.userId]);
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Tarea no encontrada' });
         }
