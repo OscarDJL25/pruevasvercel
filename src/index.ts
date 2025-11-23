@@ -387,10 +387,21 @@ app.post('/tareas', authenticateToken, async (req: AuthRequest, res) => {
     // Convertir valores camelCase a snake_case para la DB
     const dbData = objectToSnakeCase(bodyEnCamelCase)
     console.log('🔵 DEBUG - Datos convertidos para DB:', dbData);
-    console.log('🔵 DEBUG - Valores para INSERT:', [
-      dbData.nombre, dbData.descripcion, dbData.fecha_asignacion, dbData.hora_asignacion,
-      dbData.fecha_entrega, dbData.hora_entrega, dbData.finalizada, dbData.prioridad, req.userId
-    ]);
+    
+    // Usar valores por defecto para campos opcionales
+    const valores = [
+      dbData.nombre || null,
+      dbData.descripcion || null,
+      dbData.fecha_asignacion || null,
+      dbData.hora_asignacion || null,
+      dbData.fecha_entrega || null,
+      dbData.hora_entrega || null,
+      dbData.finalizada !== undefined ? dbData.finalizada : false,
+      dbData.prioridad || 'media',
+      req.userId
+    ];
+    
+    console.log('🔵 DEBUG - Valores para INSERT:', valores);
     
     // Insertamos usando nombres snake_case para la DB
     const result = await pool.query(
@@ -398,8 +409,7 @@ app.post('/tareas', authenticateToken, async (req: AuthRequest, res) => {
         (nombre, descripcion, fecha_asignacion, hora_asignacion,
           fecha_entrega, hora_entrega, finalizada, prioridad, usuario_id)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [dbData.nombre, dbData.descripcion, dbData.fecha_asignacion, dbData.hora_asignacion,
-        dbData.fecha_entrega, dbData.hora_entrega, dbData.finalizada, dbData.prioridad, req.userId]
+      valores
     )
     
     // Convertir respuesta a camelCase
