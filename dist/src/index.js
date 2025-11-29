@@ -243,13 +243,157 @@ app.get('/db-status', async (req, res) => {
     }
 });
 // =====================================
+// ENDPOINT DE SINCRONIZACIÓN
+// =====================================
+/**
+ * POST /tareas/sync - Endpoint de sincronización para aplicación móvil
+ *
+ * Maneja la sincronización bidireccional de tareas entre cliente y servidor:
+ * - Creación de nuevas tareas del cliente
+ * - Actualización de tareas existentes con resolución de conflictos basada en timestamps
+ * - Eliminación lógica (soft delete) de tareas
+ *
+ * @param {Array} req.body - Array de tareas del cliente en camelCase
+ * @returns {Object} - { updatedTasks: Array, conflicts: Array }
+ */
+app.post('/tareas/sync', authenticateToken, async (req, res) => {
+    console.log('🔄 POST /tareas/sync - Usuario ID:', req.userId);
+    console.log('🔄 Tareas recibidas del cliente:', req.body.length || 0);
+    const { userId } = req;
+    const tareasCliente = req.body || [];
+    // Arrays para almacenar resultados de sincronización
+    const updatedTasks = [];
+    const conflicts = [];
+    try {
+        // Iterar sobre cada tarea del cliente
+        for (const tareaCliente of tareasCliente) {
+            console.log('🔄 Procesando tarea cliente:', tareaCliente.idApi, tareaCliente.nombre);
+            // CASO A: Tarea Nueva del Cliente (idApi es null)
+            if (tareaCliente.idApi === null || tareaCliente.idApi === undefined) {
+                console.log('➕ Creando nueva tarea para el cliente');
+                // Convertir datos del cliente a snake_case para la BD
+                const dbData = objectToSnakeCase(tareaCliente);
+                // Preparar valores para insertar
+                const fechaHoy = new Date().toISOString().split('T')[0];
+                const horaAhora = new Date().toTimeString().split(' ')[0];
+                const currentTimestamp = Date.now();
+                // Mapear prioridad string a integer
+                const prioridadMap = { 'baja': 1, 'media': 2, 'alta': 3 };
+                const prioridadInt = typeof dbData.prioridad === 'string'
+                    ? prioridadMap[dbData.prioridad.toLowerCase()] || 2
+                    : dbData.prioridad || 2;
+                const valores = [
+                    dbData.nombre || null,
+                    dbData.descripcion || null,
+                    dbData.fecha_asignacion || fechaHoy,
+                    dbData.hora_asignacion || horaAhora,
+                    dbData.fecha_entrega || null,
+                    dbData.hora_entrega || null,
+                    dbData.finalizada !== undefined ? dbData.finalizada : false,
+                    prioridadInt,
+                    userId,
+                    false, // pending_sync
+                    currentTimestamp, // updated_at
+                    false, // deleted
+                    null // deleted_at
+                ];
+                const result = await pool.query(`
+          INSERT INTO tareas 
+          (nombre, descripcion, fecha_asignacion, hora_asignacion, 
+           fecha_entrega, hora_entrega, finalizada, prioridad, usuario_id,
+           pending_sync, updated_at, deleted, deleted_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
+          RETURNING *
+        `, valores);
+                const nuevaTarea = objectToCamelCase(result.rows[0]);
+                updatedTasks.push(nuevaTarea);
+                console.log('✅ Nueva tarea creada:', nuevaTarea.id);
+            }
+            else {
+                // CASO B: Tarea Existente del Cliente (tiene idApi)
+                console.log('🔄 Actualizando tarea existente:', tareaCliente.idApi);
+                // Buscar la tarea en el servidor
+                const serverResult = await pool.query('SELECT * FROM tareas WHERE id = $1 AND usuario_id = $2', [tareaCliente.idApi, userId]);
+                // Si no existe la tarea en el servidor, ignorarla
+                if (serverResult.rows.length === 0) {
+                    console.log('⚠️ Tarea no encontrada en servidor, ignorando:', tareaCliente.idApi);
+                    continue;
+                }
+                const tareaServidor = serverResult.rows[0];
+                // Si el cliente marca la tarea como eliminada
+                if (tareaCliente.deleted === true) {
+                    console.log('🗑️ Eliminación lógica de tarea:', tareaCliente.idApi);
+                    await pool.query('UPDATE tareas SET deleted = true, deleted_at = NOW(), updated_at = $1 WHERE id = $2 AND usuario_id = $3', [Date.now(), tareaCliente.idApi, userId]);
+                    // No añadir a updatedTasks ni conflicts para eliminaciones
+                    continue;
+                }
+                // Comparar timestamps para resolver conflictos
+                const clientTimestamp = tareaCliente.updatedAt;
+                const serverTimestamp = parseInt(tareaServidor.updated_at.toString());
+                console.log('⏰ Comparando timestamps - Cliente:', clientTimestamp, 'Servidor:', serverTimestamp);
+                if (clientTimestamp > serverTimestamp) {
+                    // Cliente gana - actualizar en servidor
+                    console.log('📤 Cliente gana, actualizando servidor');
+                    const dbData = objectToSnakeCase(tareaCliente);
+                    const prioridadMap = { 'baja': 1, 'media': 2, 'alta': 3 };
+                    const prioridadInt = typeof dbData.prioridad === 'string'
+                        ? prioridadMap[dbData.prioridad.toLowerCase()] || 2
+                        : dbData.prioridad || 2;
+                    const updateResult = await pool.query(`
+            UPDATE tareas SET
+              nombre = $1, descripcion = $2,
+              fecha_asignacion = $3, hora_asignacion = $4,
+              fecha_entrega = $5, hora_entrega = $6,
+              finalizada = $7, prioridad = $8,
+              updated_at = $9
+            WHERE id = $10 AND usuario_id = $11 
+            RETURNING *
+          `, [
+                        dbData.nombre, dbData.descripcion,
+                        dbData.fecha_asignacion, dbData.hora_asignacion,
+                        dbData.fecha_entrega, dbData.hora_entrega,
+                        dbData.finalizada, prioridadInt,
+                        clientTimestamp, tareaCliente.idApi, userId
+                    ]);
+                    const tareaActualizada = objectToCamelCase(updateResult.rows[0]);
+                    updatedTasks.push(tareaActualizada);
+                }
+                else if (serverTimestamp > clientTimestamp) {
+                    // Servidor gana - conflicto
+                    console.log('📥 Servidor gana, registrando conflicto');
+                    const conflicto = {
+                        taskId: tareaCliente.idApi,
+                        clientVersion: tareaCliente,
+                        serverVersion: objectToCamelCase(tareaServidor),
+                        conflictType: 'UPDATE_CONFLICT'
+                    };
+                    conflicts.push(conflicto);
+                }
+                else {
+                    // Timestamps iguales - no hacer nada
+                    console.log('⚖️ Timestamps iguales, no hay cambios');
+                }
+            }
+        }
+        console.log(`✅ Sincronización completada - Actualizadas: ${updatedTasks.length}, Conflictos: ${conflicts.length}`);
+        res.json({
+            updatedTasks,
+            conflicts
+        });
+    }
+    catch (err) {
+        console.error('❌ Error en sincronización:', err);
+        res.status(500).json({ error: 'Error en la sincronización de tareas' });
+    }
+});
+// =====================================
 // ENDPOINTS DE TAREAS (PROTEGIDOS CON JWT)
 // =====================================
-// GET /tareas - Obtener tareas del usuario autenticado
+// GET /tareas - Obtener tareas del usuario autenticado (solo las no eliminadas)
 app.get('/tareas', authenticateToken, async (req, res) => {
     console.log('🔵 GET /tareas - Usuario ID:', req.userId);
     try {
-        const result = await pool.query('SELECT * FROM tareas WHERE usuario_id = $1 ORDER BY id ASC', [req.userId]);
+        const result = await pool.query('SELECT * FROM tareas WHERE usuario_id = $1 AND deleted = false ORDER BY id ASC', [req.userId]);
         console.log(`✅ Obtenidas ${result.rows.length} tareas para usuario ${req.userId}`);
         // Convertir de snake_case (BD) a camelCase (JSON)
         const tareasEnCamelCase = objectToCamelCase(result.rows);
@@ -324,6 +468,7 @@ app.post('/tareas', authenticateToken, async (req, res) => {
         // Usar valores por defecto según esquema de DB
         const fechaHoy = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
         const horaAhora = new Date().toTimeString().split(' ')[0]; // HH:mm:ss
+        const currentTimestamp = Date.now(); // Para updated_at
         // Mapear prioridad string a integer
         const prioridadMap = { 'baja': 1, 'media': 2, 'alta': 3 };
         const prioridadInt = typeof dbData.prioridad === 'string'
@@ -338,14 +483,19 @@ app.post('/tareas', authenticateToken, async (req, res) => {
             dbData.hora_entrega || null, // $6 - nullable
             dbData.finalizada !== undefined ? dbData.finalizada : false, // $7 - boolean
             prioridadInt, // $8 - integer (1=baja, 2=media, 3=alta)
-            req.userId // $9 - usuario_id
+            req.userId, // $9 - usuario_id
+            false, // $10 - pending_sync
+            currentTimestamp, // $11 - updated_at
+            false, // $12 - deleted
+            null // $13 - deleted_at
         ];
         console.log('🔵 DEBUG - Valores corregidos para INSERT:', valores);
-        // Insertamos usando nombres snake_case para la DB
+        // Insertamos usando nombres snake_case para la DB incluyendo campos de sincronización
         const result = await pool.query(`INSERT INTO tareas
         (nombre, descripcion, fecha_asignacion, hora_asignacion,
-          fecha_entrega, hora_entrega, finalizada, prioridad, usuario_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`, valores);
+          fecha_entrega, hora_entrega, finalizada, prioridad, usuario_id,
+          pending_sync, updated_at, deleted, deleted_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`, valores);
         // Convertir respuesta a camelCase
         const tareaCreada = objectToCamelCase(result.rows[0]);
         console.log('✅ Tarea creada para usuario:', req.userId, tareaCreada);
@@ -362,17 +512,18 @@ app.delete('/tareas/:id', authenticateToken, async (req, res) => {
     console.log('🔴 DELETE /tareas/' + id + ' - Usuario ID:', req.userId);
     try {
         // Verificar que la tarea pertenece al usuario y obtener sus datos
-        const checkResult = await pool.query('SELECT * FROM tareas WHERE id = $1 AND usuario_id = $2', [id, req.userId]);
+        const checkResult = await pool.query('SELECT * FROM tareas WHERE id = $1 AND usuario_id = $2 AND deleted = false', [id, req.userId]);
         if (checkResult.rows.length === 0) {
             return res.status(404).json({ error: 'Tarea no encontrada o no autorizado' });
         }
-        // Guardar datos antes de eliminar para retornar en camelCase
+        // Guardar datos antes de la eliminación lógica
         const tareaOriginal = checkResult.rows[0];
-        // Eliminar la tarea
-        await pool.query('DELETE FROM tareas WHERE id = $1 AND usuario_id = $2', [id, req.userId]);
+        // Eliminación lógica (soft delete) - marcar como eliminada
+        const currentTimestamp = Date.now();
+        const deleteResult = await pool.query('UPDATE tareas SET deleted = true, deleted_at = NOW(), updated_at = $1 WHERE id = $2 AND usuario_id = $3 RETURNING *', [currentTimestamp, id, req.userId]);
         // Convertir respuesta a camelCase
-        const tareaEliminada = objectToCamelCase(tareaOriginal);
-        console.log('🗑️ Tarea eliminada:', tareaEliminada);
+        const tareaEliminada = objectToCamelCase(deleteResult.rows[0]);
+        console.log('🗑️ Tarea eliminada lógicamente:', tareaEliminada);
         res.json({ message: 'Tarea eliminada correctamente', tarea: tareaEliminada });
     }
     catch (err) {
@@ -390,25 +541,27 @@ app.put('/tareas/:id', authenticateToken, async (req, res) => {
     const { nombre, descripcion, fechaAsignacion, horaAsignacion, fechaEntrega, horaEntrega, finalizada, prioridad } = bodyEnCamelCase;
     try {
         // Verificar que la tarea pertenece al usuario antes de actualizar
-        const checkResult = await pool.query('SELECT id FROM tareas WHERE id = $1 AND usuario_id = $2', [id, req.userId]);
+        const checkResult = await pool.query('SELECT id FROM tareas WHERE id = $1 AND usuario_id = $2 AND deleted = false', [id, req.userId]);
         if (checkResult.rows.length === 0) {
             return res.status(404).json({ error: 'Tarea no encontrada o no autorizado' });
         }
         // Convertir valores camelCase a snake_case para la DB
         const dbData = objectToSnakeCase(bodyEnCamelCase);
+        const currentTimestamp = Date.now();
         // Mapear prioridad string a integer si es necesario
         const prioridadMap = { 'baja': 1, 'media': 2, 'alta': 3 };
         const prioridadInt = typeof dbData.prioridad === 'string'
             ? prioridadMap[dbData.prioridad.toLowerCase()] || 2
             : dbData.prioridad || 2;
-        // UPDATE usando snake_case para la DB
+        // UPDATE usando snake_case para la DB, incluyendo updated_at
         const result = await pool.query(`UPDATE tareas SET
         nombre = $1, descripcion = $2,
         fecha_asignacion = $3, hora_asignacion = $4,
         fecha_entrega = $5, hora_entrega = $6,
-        finalizada = $7, prioridad = $8
-      WHERE id = $9 AND usuario_id = $10 RETURNING *`, [dbData.nombre, dbData.descripcion, dbData.fecha_asignacion, dbData.hora_asignacion,
-            dbData.fecha_entrega, dbData.hora_entrega, dbData.finalizada, prioridadInt, id, req.userId]);
+        finalizada = $7, prioridad = $8, updated_at = $9
+      WHERE id = $10 AND usuario_id = $11 RETURNING *`, [dbData.nombre, dbData.descripcion, dbData.fecha_asignacion, dbData.hora_asignacion,
+            dbData.fecha_entrega, dbData.hora_entrega, dbData.finalizada, prioridadInt,
+            currentTimestamp, id, req.userId]);
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Tarea no encontrada' });
         }
