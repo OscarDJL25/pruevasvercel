@@ -345,9 +345,15 @@ app.post('/tareas/sync', authenticateToken, async (req: AuthRequest, res) => {
     for (const tareaCliente of tareasCliente) {
       console.log('🔄 Procesando tarea cliente:', tareaCliente.idApi, tareaCliente.nombre)
       
-      // CASO A: Tarea Nueva del Cliente (idApi es null)
-      if (tareaCliente.idApi === null || tareaCliente.idApi === undefined) {
-        console.log('➕ Creando nueva tarea para el cliente')
+      // Extraer idApi del cliente - es el ID de la tarea en el servidor
+      const idApi = tareaCliente.idApi
+      
+      // BIFURCACIÓN PRINCIPAL BASADA EN idApi
+      if (!idApi || idApi === null || idApi === undefined) {
+        // ========================================
+        // CASO A: TAREA NUEVA (idApi es null/undefined)
+        // ========================================
+        console.log('➕ Creando nueva tarea para el cliente - idApi es null/undefined')
         
         // Convertir datos del cliente a snake_case para la BD
         const dbData = objectToSnakeCase(tareaCliente)
@@ -390,91 +396,106 @@ app.post('/tareas/sync', authenticateToken, async (req: AuthRequest, res) => {
         
         const nuevaTarea = objectToCamelCase(result.rows[0])
         updatedTasks.push(nuevaTarea)
-        console.log('✅ Nueva tarea creada:', nuevaTarea.id)
+        console.log('✅ Nueva tarea creada con ID:', nuevaTarea.id)
         
       } else {
-        // CASO B: Tarea Existente del Cliente (tiene idApi)
-        console.log('🔄 Actualizando tarea existente:', tareaCliente.idApi)
+        // ========================================
+        // CASO B: TAREA EXISTENTE (idApi tiene valor)
+        // ========================================
+        console.log('🔄 Procesando tarea existente con idApi:', idApi)
         
-        // Buscar la tarea en el servidor
+        // Primero verificar si la tarea realmente existe en la BD para este usuario
         const serverResult = await pool.query(
           'SELECT * FROM tareas WHERE id = $1 AND usuario_id = $2',
-          [tareaCliente.idApi, userId]
+          [idApi, userId]
         )
         
-        // Si no existe la tarea en el servidor, ignorarla
+        // Si no existe la tarea en el servidor, ignorarla y continuar
         if (serverResult.rows.length === 0) {
-          console.log('⚠️ Tarea no encontrada en servidor, ignorando:', tareaCliente.idApi)
+          console.log('⚠️ Tarea no encontrada en servidor, ignorando idApi:', idApi)
           continue
         }
         
         const tareaServidor = serverResult.rows[0]
+        console.log('📋 Tarea encontrada en servidor:', tareaServidor.id)
         
-        // Si el cliente marca la tarea como eliminada
+        // Verificar el flag deleted del cliente
         if (tareaCliente.deleted === true) {
-          console.log('🗑️ Eliminación lógica de tarea:', tareaCliente.idApi)
+          // ========================================
+          // ELIMINACIÓN LÓGICA (SOFT DELETE)
+          // ========================================
+          console.log('🗑️ Eliminación lógica de tarea idApi:', idApi)
           
           await pool.query(
             'UPDATE tareas SET deleted = true, deleted_at = NOW(), updated_at = $1 WHERE id = $2 AND usuario_id = $3',
-            [Date.now(), tareaCliente.idApi, userId]
+            [Date.now(), idApi, userId]
           )
           
+          console.log('✅ Tarea eliminada lógicamente:', idApi)
           // No añadir a updatedTasks ni conflicts para eliminaciones
           continue
-        }
-        
-        // Comparar timestamps para resolver conflictos
-        const clientTimestamp = tareaCliente.updatedAt
-        const serverTimestamp = parseInt(tareaServidor.updated_at.toString())
-        
-        console.log('⏰ Comparando timestamps - Cliente:', clientTimestamp, 'Servidor:', serverTimestamp)
-        
-        if (clientTimestamp > serverTimestamp) {
-          // Cliente gana - actualizar en servidor
-          console.log('📤 Cliente gana, actualizando servidor')
-          
-          const dbData = objectToSnakeCase(tareaCliente)
-          const prioridadMap: { [key: string]: number } = { 'baja': 1, 'media': 2, 'alta': 3 }
-          const prioridadInt = typeof dbData.prioridad === 'string'
-            ? prioridadMap[dbData.prioridad.toLowerCase()] || 2
-            : dbData.prioridad || 2
-          
-          const updateResult = await pool.query(`
-            UPDATE tareas SET
-              nombre = $1, descripcion = $2,
-              fecha_asignacion = $3, hora_asignacion = $4,
-              fecha_entrega = $5, hora_entrega = $6,
-              finalizada = $7, prioridad = $8,
-              updated_at = $9
-            WHERE id = $10 AND usuario_id = $11 
-            RETURNING *
-          `, [
-            dbData.nombre, dbData.descripcion,
-            dbData.fecha_asignacion, dbData.hora_asignacion,
-            dbData.fecha_entrega, dbData.hora_entrega,
-            dbData.finalizada, prioridadInt,
-            clientTimestamp, tareaCliente.idApi, userId
-          ])
-          
-          const tareaActualizada = objectToCamelCase(updateResult.rows[0])
-          updatedTasks.push(tareaActualizada)
-          
-        } else if (serverTimestamp > clientTimestamp) {
-          // Servidor gana - conflicto
-          console.log('📥 Servidor gana, registrando conflicto')
-          
-          const conflicto = {
-            taskId: tareaCliente.idApi,
-            clientVersion: tareaCliente,
-            serverVersion: objectToCamelCase(tareaServidor),
-            conflictType: 'UPDATE_CONFLICT'
-          }
-          
-          conflicts.push(conflicto)
           
         } else {
-          // Timestamps iguales - no hacer nada
-          console.log('⚖️ Timestamps iguales, no hay cambios')
+          // ========================================
+          // ACTUALIZACIÓN Y RESOLUCIÓN DE CONFLICTOS
+          // ========================================
+          console.log('🔄 Comparando timestamps para resolución de conflictos')
+          
+          // Comparar timestamps para resolver conflictos
+          const clientTimestamp = tareaCliente.updatedAt
+          const serverTimestamp = parseInt(tareaServidor.updated_at.toString())
+          
+          console.log('⏰ Timestamps - Cliente:', clientTimestamp, 'Servidor:', serverTimestamp)
+          
+          if (clientTimestamp > serverTimestamp) {
+            // Cliente gana - actualizar en servidor
+            console.log('📤 Cliente gana, actualizando servidor')
+            
+            const dbData = objectToSnakeCase(tareaCliente)
+            const prioridadMap: { [key: string]: number } = { 'baja': 1, 'media': 2, 'alta': 3 }
+            const prioridadInt = typeof dbData.prioridad === 'string'
+              ? prioridadMap[dbData.prioridad.toLowerCase()] || 2
+              : dbData.prioridad || 2
+            
+            const updateResult = await pool.query(`
+              UPDATE tareas SET
+                nombre = $1, descripcion = $2,
+                fecha_asignacion = $3, hora_asignacion = $4,
+                fecha_entrega = $5, hora_entrega = $6,
+                finalizada = $7, prioridad = $8,
+                updated_at = $9
+              WHERE id = $10 AND usuario_id = $11 
+              RETURNING *
+            `, [
+              dbData.nombre, dbData.descripcion,
+              dbData.fecha_asignacion, dbData.hora_asignacion,
+              dbData.fecha_entrega, dbData.hora_entrega,
+              dbData.finalizada, prioridadInt,
+              clientTimestamp, idApi, userId
+            ])
+            
+            const tareaActualizada = objectToCamelCase(updateResult.rows[0])
+            updatedTasks.push(tareaActualizada)
+            console.log('✅ Tarea actualizada:', idApi)
+            
+          } else if (serverTimestamp > clientTimestamp) {
+            // Servidor gana - registrar conflicto
+            console.log('📥 Servidor gana, registrando conflicto')
+            
+            const conflicto = {
+              taskId: idApi,
+              clientVersion: tareaCliente,
+              serverVersion: objectToCamelCase(tareaServidor),
+              conflictType: 'UPDATE_CONFLICT'
+            }
+            
+            conflicts.push(conflicto)
+            console.log('⚠️ Conflicto registrado para tarea:', idApi)
+            
+          } else {
+            // Timestamps iguales - no hacer nada
+            console.log('⚖️ Timestamps iguales, no hay cambios para tarea:', idApi)
+          }
         }
       }
     }
