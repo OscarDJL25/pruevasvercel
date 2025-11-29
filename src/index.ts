@@ -346,10 +346,11 @@ app.post('/tareas/sync', authenticateToken, async (req: AuthRequest, res) => {
       console.log('🔄 Procesando tarea cliente:', tareaCliente.idApi, tareaCliente.nombre)
       
       // Extraer idApi del cliente - es el ID de la tarea en el servidor
-      // IMPORTANTE: Android puede enviar 'idLocal' o 'idApi'
-      const idApi = tareaCliente.idApi || tareaCliente.idLocal
+      // IMPORTANTE: idLocal es solo ID temporal del cliente, NO del servidor
+      // Solo usar idApi del servidor, ignorar idLocal
+      const idApi = tareaCliente.idApi  // NO usar idLocal
       
-      console.log('🔍 Verificando IDs - idApi:', tareaCliente.idApi, 'idLocal:', tareaCliente.idLocal, 'usando:', idApi)
+      console.log('🔍 Verificando IDs - idApi:', tareaCliente.idApi, 'idLocal:', tareaCliente.idLocal, 'usando para servidor:', idApi)
       
       // BIFURCACIÓN PRINCIPAL BASADA EN idApi
       if (!idApi || idApi === null || idApi === undefined) {
