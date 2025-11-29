@@ -269,12 +269,20 @@ app.post('/tareas/sync', authenticateToken, async (req, res) => {
         for (const tareaCliente of tareasCliente) {
             console.log('🔄 Procesando tarea cliente:', tareaCliente.idApi, tareaCliente.nombre);
             // Extraer idApi del cliente - es el ID de la tarea en el servidor
-            const idApi = tareaCliente.idApi;
+            // IMPORTANTE: Android puede enviar 'idLocal' o 'idApi'
+            const idApi = tareaCliente.idApi || tareaCliente.idLocal;
+            console.log('🔍 Verificando IDs - idApi:', tareaCliente.idApi, 'idLocal:', tareaCliente.idLocal, 'usando:', idApi);
             // BIFURCACIÓN PRINCIPAL BASADA EN idApi
             if (!idApi || idApi === null || idApi === undefined) {
                 // ========================================
                 // CASO A: TAREA NUEVA (idApi es null/undefined)
                 // ========================================
+                // VALIDACIÓN CRÍTICA: Si viene marcada como deleted pero no tiene idApi,
+                // significa que es una tarea local que nunca existió en el servidor
+                if (tareaCliente.deleted === true) {
+                    console.log('⚠️ Ignorando tarea marcada como eliminada sin idApi válido:', tareaCliente.nombre);
+                    continue; // Saltar esta iteración, no procesar
+                }
                 console.log('➕ Creando nueva tarea para el cliente - idApi es null/undefined');
                 // Convertir datos del cliente a snake_case para la BD
                 const dbData = objectToSnakeCase(tareaCliente);
