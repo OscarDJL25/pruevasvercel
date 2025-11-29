@@ -296,11 +296,14 @@ app.post('/tareas/sync', authenticateToken, async (req, res) => {
                 const prioridadInt = typeof dbData.prioridad === 'string'
                     ? prioridadMap[dbData.prioridad.toLowerCase()] || 2
                     : dbData.prioridad || 2;
+                // Manejar campos de fecha vacíos (string "") como defaults
+                const fechaAsignacion = (!dbData.fecha_asignacion || dbData.fecha_asignacion === '') ? fechaHoy : dbData.fecha_asignacion;
+                const horaAsignacion = (!dbData.hora_asignacion || dbData.hora_asignacion === '') ? horaAhora : dbData.hora_asignacion;
                 const valores = [
                     dbData.nombre || null,
                     dbData.descripcion || null,
-                    dbData.fecha_asignacion || fechaHoy,
-                    dbData.hora_asignacion || horaAhora,
+                    fechaAsignacion,
+                    horaAsignacion,
                     dbData.fecha_entrega || null,
                     dbData.hora_entrega || null,
                     dbData.finalizada !== undefined ? dbData.finalizada : false,
@@ -365,6 +368,11 @@ app.post('/tareas/sync', authenticateToken, async (req, res) => {
                         const prioridadInt = typeof dbData.prioridad === 'string'
                             ? prioridadMap[dbData.prioridad.toLowerCase()] || 2
                             : dbData.prioridad || 2;
+                        // Manejar campos de fecha vacíos también en updates
+                        const fechaHoy = new Date().toISOString().split('T')[0];
+                        const horaAhora = new Date().toTimeString().split(' ')[0];
+                        const fechaAsignacion = (!dbData.fecha_asignacion || dbData.fecha_asignacion === '') ? fechaHoy : dbData.fecha_asignacion;
+                        const horaAsignacion = (!dbData.hora_asignacion || dbData.hora_asignacion === '') ? horaAhora : dbData.hora_asignacion;
                         const updateResult = await pool.query(`
               UPDATE tareas SET
                 nombre = $1, descripcion = $2,
@@ -376,7 +384,7 @@ app.post('/tareas/sync', authenticateToken, async (req, res) => {
               RETURNING *
             `, [
                             dbData.nombre, dbData.descripcion,
-                            dbData.fecha_asignacion, dbData.hora_asignacion,
+                            fechaAsignacion, horaAsignacion,
                             dbData.fecha_entrega, dbData.hora_entrega,
                             dbData.finalizada, prioridadInt,
                             clientTimestamp, idApi, userId
