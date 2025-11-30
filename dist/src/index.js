@@ -270,9 +270,9 @@ app.post('/tareas/sync', authenticateToken, async (req, res) => {
             console.log('🔄 Procesando tarea cliente:', tareaCliente.idApi, tareaCliente.nombre);
             // Extraer idApi del cliente - es el ID de la tarea en el servidor
             // IMPORTANTE: idLocal es solo ID temporal del cliente, NO del servidor
-            // Solo usar idApi del servidor, ignorar idLocal
-            const idApi = tareaCliente.idApi; // NO usar idLocal
-            console.log('🔍 Verificando IDs - idApi:', tareaCliente.idApi, 'idLocal:', tareaCliente.idLocal, 'usando para servidor:', idApi);
+            // COMPATIBILIDAD: Aceptar tanto 'idApi' como 'id' por compatibilidad con cliente Android
+            const idApi = tareaCliente.idApi || tareaCliente.id; // Acepta ambos formatos
+            console.log('🔍 Verificando IDs - idApi:', tareaCliente.idApi, 'id:', tareaCliente.id, 'idLocal:', tareaCliente.idLocal, 'usando para servidor:', idApi);
             // BIFURCACIÓN PRINCIPAL BASADA EN idApi
             if (!idApi || idApi === null || idApi === undefined) {
                 // ========================================
